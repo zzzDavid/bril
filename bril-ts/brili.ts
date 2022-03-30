@@ -39,6 +39,35 @@ export class Key {
     }
 }
 
+class GarbageCollector {
+  private ref_count : Map<Key, number>
+  private heap : Heap<Value>
+
+  constructor(heap : Heap<Value>){
+    this.ref_count = new Map()
+    this.heap = heap
+  }
+  
+  increase(key : Key) {
+    if (!this.ref_count.has(key)) {
+      this.ref_count.set(key, 1)
+    } else {
+      let prev = this.ref_count.get(key)
+      this.ref_count.set(key, prev as number + 1)
+    }
+  }
+
+  decrease(key : Key) {
+    let prev = this.ref_count.get(key)
+    if (prev == 1) {
+      // this object should be freed
+      this.heap.free(key)
+    } else {
+      this.ref_count.set(key, prev as number - 1)
+    }
+  }
+}
+
 /**
  * A Heap maps Keys to arrays of a given type.
  */
