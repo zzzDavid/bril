@@ -64,12 +64,7 @@ class GarbageCollector {
 
   decrease(key : Key) {
     let prev = this.ref_count[this.level].get(key)
-    if (prev == 1) {
-      // this object should be freed
-      this.heap.free(key)
-    } else {
-      this.ref_count[this.level].set(key, prev as number - 1)
-    }
+    this.ref_count[this.level].set(key, prev as number - 1)
   }
 
   inc_level(){
@@ -83,7 +78,10 @@ class GarbageCollector {
 
   freeall() {
     for (let key of this.ref_count[this.level].keys()) {
-      this.heap.free(key)
+      if (this.ref_count[this.level].get(key) == 1) {
+        console.log("    free: base=" + key.base + " offset=" + key.offset)
+        this.heap.free(key)
+      }
     }
   }
 }
@@ -643,14 +641,21 @@ function evalInstr(instr: bril.Instruction, state: State): Action {
   }
 
   case "ret": {
-    console.log("free all at level=" + state.gc.getLevel());
-    state.gc.freeall();
-    state.gc.dec_level();
     let args = instr.args || [];
     if (args.length == 0) {
+      console.log("free all at level=" + state.gc.getLevel() + " in ret");
+      state.gc.freeall();
+      state.gc.dec_level();
       return {"action": "end", "ret": null};
     } else if (args.length == 1) {
       let val = get(state.env, args[0]);
+      let ptrVal = val as Pointer;
+      if (ptrVal.loc) {
+        state.gc.increase(ptrVal.loc);
+      }
+      console.log("free all at level=" + state.gc.getLevel() + " in ret");
+      state.gc.freeall();
+      state.gc.dec_level();
       return {"action": "end", "ret": val};
     } else {
       throw error(`ret takes 0 or 1 argument(s); got ${args.length}`);
@@ -762,6 +767,18 @@ function evalInstr(instr: bril.Instruction, state: State): Action {
 
 function evalFunc(func: bril.Function, state: State): Value | null {
   console.log(" evalFunc: " + func.name + " level=" + state.gc.getLevel());
+
+  // If the function argument has ptr, we increase their ref count by one
+  if (func.args != undefined){
+    for (let i = 0; i < func.args.length; ++i){
+      let arg = state.env.get(func.args[i].name);
+      let ptrArg = arg as Pointer;
+      if (ptrArg.loc) {
+        state.gc.increase(ptrArg.loc);
+        state.gc.increase(ptrArg.loc);
+      }
+    }
+  }
 
   for (let i = 0; i < func.instrs.length; ++i) {
     let line = func.instrs[i];
