@@ -40,30 +40,50 @@ export class Key {
 }
 
 class GarbageCollector {
-  private ref_count : Map<Key, number>
-  private heap : Heap<Value>
+  private ref_count : Map<Key, number>[];
+  private heap : Heap<Value>;
+  private level = 0;
 
   constructor(heap : Heap<Value>){
-    this.ref_count = new Map()
-    this.heap = heap
+    this.ref_count = [new Map()];
+    this.heap = heap;
+  }
+
+  getLevel(){
+    return this.level;
   }
   
   increase(key : Key) {
-    if (!this.ref_count.has(key)) {
-      this.ref_count.set(key, 1)
+    if (!this.ref_count[this.level].has(key)) {
+      this.ref_count[this.level].set(key, 1)
     } else {
-      let prev = this.ref_count.get(key)
-      this.ref_count.set(key, prev as number + 1)
+      let prev = this.ref_count[this.level].get(key)
+      this.ref_count[this.level].set(key, prev as number + 1)
     }
   }
 
   decrease(key : Key) {
-    let prev = this.ref_count.get(key)
+    let prev = this.ref_count[this.level].get(key)
     if (prev == 1) {
       // this object should be freed
       this.heap.free(key)
     } else {
-      this.ref_count.set(key, prev as number - 1)
+      this.ref_count[this.level].set(key, prev as number - 1)
+    }
+  }
+
+  inc_level(){
+    this.level += 1;
+    this.ref_count.push(new Map<Key, number>())
+  }
+
+  dec_level() {
+    this.level -= 1;
+  }
+
+  freeall() {
+    for (let key of this.ref_count[this.level].keys()) {
+      this.heap.free(key)
     }
   }
 }
@@ -328,6 +348,7 @@ let NEXT: Action = {"action": "next"};
 type State = {
   env: Env,
   readonly heap: Heap<Value>,
+  readonly gc: GarbageCollector,
   readonly funcs: readonly bril.Function[],
 
   // For profiling: a total count of the number of instructions executed.
@@ -378,12 +399,14 @@ function evalCall(instr: bril.Operation, state: State): Action {
   let newState: State = {
     env: newEnv,
     heap: state.heap,
+    gc: state.gc,
     funcs: state.funcs,
     icount: state.icount,
     lastlabel: null,
     curlabel: null,
     specparent: null,  // Speculation not allowed.
   }
+  newState.gc.inc_level();
   let retVal = evalFunc(func, newState);
   state.icount = newState.icount;
 
@@ -620,6 +643,9 @@ function evalInstr(instr: bril.Instruction, state: State): Action {
   }
 
   case "ret": {
+    console.log("free all at level=" + state.gc.getLevel());
+    state.gc.freeall();
+    state.gc.dec_level();
     let args = instr.args || [];
     if (args.length == 0) {
       return {"action": "end", "ret": null};
@@ -647,12 +673,13 @@ function evalInstr(instr: bril.Instruction, state: State): Action {
     }
     let ptr = alloc(typ, Number(amt), state.heap);
     state.env.set(instr.dest, ptr);
+    state.gc.increase(ptr.loc);
     return NEXT;
   }
 
   case "free": {
-    let val = getPtr(instr, state.env, 0);
-    state.heap.free(val.loc);
+    // let val = getPtr(instr, state.env, 0);
+    // state.heap.free(val.loc);
     return NEXT;
   }
 
@@ -734,6 +761,8 @@ function evalInstr(instr: bril.Instruction, state: State): Action {
 }
 
 function evalFunc(func: bril.Function, state: State): Value | null {
+  console.log(" evalFunc: " + func.name + " level=" + state.gc.getLevel());
+
   for (let i = 0; i < func.instrs.length; ++i) {
     let line = func.instrs[i];
     if ('op' in line) {
@@ -807,6 +836,11 @@ function evalFunc(func: bril.Function, state: State): Value | null {
   if (state.specparent) {
     throw error(`implicit return in speculative state`);
   }
+  console.log("reached the end of the function without hitting 'ret'")
+  // free all
+  console.log("freeall at level: " + state.gc.getLevel())
+  state.gc.freeall();
+  state.gc.dec_level();
   return null;
 }
 
@@ -858,6 +892,7 @@ function parseMainArguments(expected: bril.Argument[], args: string[]) : Env {
 
 function evalProg(prog: bril.Program) {
   let heap = new Heap<Value>()
+  let gc = new GarbageCollector(heap)
   let main = findFunc("main", prog.functions);
   if (main === null) {
     console.warn(`no main function defined, doing nothing`);
@@ -880,6 +915,7 @@ function evalProg(prog: bril.Program) {
   let state: State = {
     funcs: prog.functions,
     heap,
+    gc,
     env: newEnv,
     icount: BigInt(0),
     lastlabel: null,
